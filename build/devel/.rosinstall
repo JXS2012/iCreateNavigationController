@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/jianxin/rosbuild_ws/sandbox/turtleDriver/build/devel/setup.sh

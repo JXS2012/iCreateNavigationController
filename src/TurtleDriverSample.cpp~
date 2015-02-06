@@ -1,0 +1,238 @@
+#include "TurtleDriver.h"
+
+//Purpose: use iCreate and Quadrotor to track a target robot. Quadrotor is mounted with downwards looking camera and will keep iCreate informed about current position of target robot. iCreate will keep pursuing target robot.
+//Link to a video that demonstrates the experiment: http://www.youtube.com/watch?v=enU05AepjSw
+
+
+//TurtleDriver class is capable of driving an iCreate robot to target position inside a known clustered environment.
+//iCreate robot's position is obtained using Vicon Motion Capture system.
+//Target position is obtained by visual tracking using overhead camera mounted on Quadrotor.
+
+//Class constructor
+//Input: public ROS node handle nh, private ROS node handle nh_private
+TurtleDriver::TurtleDriver(ros::NodeHandle nh, ros::NodeHandle nh_private):
+  nh_(nh), 
+  nh_private_(nh_private)
+{
+
+  ros::NodeHandle node  (nh_,"TurtleDriver");
+
+  //Dummy Turtle is in charge of the lower level controller of iCreate robot. iCreate's unicycle dynamics is feedback linearized.
+  dummy = new DummyTurtle(nh_,nh_private_);
+  ROS_INFO("Create Dummy");
+  //Turtle Eye is in charge of receiving Vicon localization information and target position fed by Quadrotor
+  eye = new TurtleEye(nh_,nh_private_);
+  ROS_INFO("Create Eye");
+  //Potnetial class provides navigation function based path planning
+  nav = new Potential(nh_,nh_private_);
+  ROS_INFO("Create Navigation Function");
+
+
+  //Future expansions in case Vicon is not present or Target position is fed through other topics
+  odom_sub = node.subscribe("/odom",1,&TurtleDriver::odomCallback, this);
+  target_sub = node.subscribe("/VisualBird/targetPoint",1,&TurtleDriver::targetCallback, this);
+
+  //Robot controller initiation
+  initiation();
+}
+
+//Class deconstructor
+TurtleDriver::~TurtleDriver()
+{
+
+  delete dummy;
+  delete eye;
+  delete nav;
+  ROS_INFO("Destroyed TurtleDriver "); 
+
+}
+
+//Odometry message callback function
+//input: odometry message: msg
+void TurtleDriver::odomCallback(const nav_msgs::Odometry msg)
+{
+  turtleOdom.x = msg.pose.pose.position.x;
+  turtleOdom.y = msg.pose.pose.position.y;
+  turtleOdom.z = msg.pose.pose.position.z;
+
+  double roll, pitch, yaw;
+  tf::Matrix3x3(tf::Quaternion(msg.pose.pose.orientation.x,
+			       msg.pose.pose.orientation.y,
+			       msg.pose.pose.orientation.z,
+			       msg.pose.pose.orientation.w)).getEulerYPR(yaw,pitch,roll);
+  turtleRPY.z = yaw;
+  turtleRPY.y = pitch;
+  turtleRPY.x = roll;
+}
+
+//Called when new points received through "/VisualBird/targetPoint" topic
+//input: time stamped geometry point: msg
+void TurtleDriver::targetCallback(const geometry_msgs::PointStamped msg)
+{
+}
+
+//Controller initation function
+void TurtleDriver::initiation()
+{
+  initParameters();
+
+  shiftOrigin.z = 0;
+
+  //Log start time
+  if (drive_mode)
+  {
+    double secs =ros::Time::now().toSec();
+    timeTable.push_back(secs);
+  }
+}
+
+//Control parameter initiation function
+void TurtleDriver::initParameters()
+{
+  double tempx,tempy;
+  //ROS parameter server is used here to initiate control parameters
+  if (!nh_private_.getParam("originX", tempx))
+    tempx = 1169; 
+
+  if (!nh_private_.getParam("originY", tempy))
+    tempy = 954; 
+
+  shiftOrigin.x = tempx;
+  shiftOrigin.y = tempy;
+
+  if (!nh_private_.getParam("turtle_drive", drive_mode))
+    drive_mode = false; //true to turn motor on
+
+  if (!nh_private_.getParam("turtle_freq",freq))
+    freq = 30; //control frequency
+
+  if (!nh_private_.getParam("turtle_total_time",total_time))
+    total_time = 30; //experiment time
+
+  if (!nh_private_.getParam("turtle_sensor", sensor))
+    sensor = "vicon"; //unit mm
+
+  if (!nh_private_.getParam("turtle_sensor_distance", sensorDistance))
+    sensorDistance = 0.1; //distance between sensor and robot center, unit m
+
+  ROS_INFO("Drive mode initialized %d",drive_mode);
+  ROS_INFO("Drive duration %.3f",total_time);
+
+  counter = 0; //used in main loop for tracking time
+
+  TurtleDriver_finish = false;
+}
+
+//Main controller
+void TurtleDriver::invokeController()
+{
+  if (sensor == "vicon")
+    {
+      if (eye->getCurrentVel().x == 0 && eye->getCurrentVel().y == 0 && eye->getCurrentVel().z == 0)
+	{
+	  //if no vicon feedback, robot shall stay in place
+	  dummy->VelDrive(0,0,eye->getPsi());
+	}
+      else
+	{
+	  //obtain desired robot velocity vector from path planner
+	  pcl::PointXYZ vel_des = nav->getVelDes();
+	  ROS_DEBUG("desired vel: %.3f %.3f current yaw %.3f",vel_des.x,vel_des.y,eye->getPsi());
+	  //due to physical constraint, robot has lower bound on forward velocity
+	  if (sqrt(vel_des.x*vel_des.x+vel_des.y*vel_des.y)>0.05) 
+	    //dummy provides a velocity driver to drive iCreate as a robot with single integrator dynamics
+	    dummy->VelDrive(vel_des.x,vel_des.y,eye->getPsi());
+	  else
+	    dummy->VelDrive(0,0,eye->getPsi());
+	}
+    }
+}
+
+//Control loop that should be called at desired frequency in main program
+void TurtleDriver::drive()
+{
+  //Update robot and target positions in global frame
+  eye->updateFlightStatus();
+  pcl::PointXYZ sensorPoint;
+  sensorPoint = eye->getCurrentPoint();
+  sensorPoint.x += sensorDistance * cos(eye->getPsi()) * 1000;
+  sensorPoint.y += sensorDistance * sin(eye->getPsi()) * 1000;
+  ROS_DEBUG("target at: %.3f %.3f",eye->getTargetPos().x, eye->getTargetPos().y);
+
+  //Update navigation planner with most recent robot and target positions
+  nav->updatePVA(scalarProduct(0.001,vectorMinus(sensorPoint,shiftOrigin)),eye->getTargetPos(),scalarProduct(0.001,eye->getCurrentVel()),eye->getTargetVel(),0);
+
+  //Call controllers
+  invokeController();
+
+  //Data Logging
+  double secs =ros::Time::now().toSec();
+  timeLog.push_back(secs);   
+  turtlePosLog.push_back(turtleOdom);
+  turtleRPYLog.push_back(turtleRPY);
+
+  //Check whether it is time to terminate experiment
+  stop_drive();
+  
+  //Used as controller timer. It is accurate as long as the control loop is run exactly at desired frequency
+  counter ++;
+}
+
+//Stop function
+void TurtleDriver::stop_drive()
+{
+  if (counter >= freq * total_time)
+    {
+      TurtleDriver_finish = true;
+      dummy->VelDrive(0,0,eye->getPsi());
+      double secs =ros::Time::now().toSec();
+      timeTable.push_back(secs);
+    }
+}
+
+bool TurtleDriver::finish()
+{
+  return TurtleDriver_finish;
+}
+
+//Data logging
+void TurtleDriver::writeLog(int fileNo)
+{
+  std::FILE * pFile;
+  char buff[100];
+  sprintf(buff,"/home/jianxin/turtle%d.txt",fileNo);
+  std::string filename = buff;
+
+  pFile = fopen(filename.c_str(),"w");
+  if (pFile!=NULL)
+    {
+      for (int i = 0; (unsigned)i<timeLog.size();i++)
+	fprintf(pFile, "x %.3f y %.3f z %.3f vx %.3f vy %.3f vz %.3f ax %.3f ay %.3f az %.3f roll %.3f pitch %.3f yaw %.3f linear-vel %.3f angular-vel %.3f time %.6f\n", eye->getLogPos(i).x, eye->getLogPos(i).y, eye->getLogPos(i).z, eye->getLogVel(i).x,eye->getLogVel(i).y,eye->getLogVel(i).z, eye->getLogAcc(i).x, eye->getLogAcc(i).y, eye->getLogAcc(i).z, eye->getLogAngle(i).x, eye->getLogAngle(i).y, eye->getLogAngle(i).z, dummy->getLogVel(i), dummy->getLogOmega(i),timeLog[i]);
+    }
+  fclose(pFile);
+
+
+  sprintf(buff,"/home/jianxin/turtleOdom%d.txt",fileNo);
+  filename = buff;
+
+  pFile = fopen(filename.c_str(),"w");
+  if (pFile!=NULL)
+    {
+      for (int i = 0; (unsigned)i<timeLog.size();i++)
+	fprintf(pFile, "x %.3f y %.3f z %.3f roll %.3f pitch %.3f yaw %.3f time %.6f\n", turtlePosLog[i].x, turtlePosLog[i].y, turtlePosLog[i].z, turtleRPYLog[i].x, turtleRPYLog[i].y, turtleRPYLog[i].z, timeLog[i]);
+    }
+  fclose(pFile);
+
+
+  sprintf(buff,"/home/jianxin/turtleTimer%d.txt",fileNo);
+  filename = buff;
+
+  pFile = fopen(filename.c_str(),"w");
+  if (pFile!=NULL)
+    {
+      fprintf(pFile,"Start turtle %.6f\n", timeTable[0]);
+      fprintf(pFile,"Stop turtle %.6f\n", timeTable[2]);
+    }
+  fclose(pFile);
+}
+

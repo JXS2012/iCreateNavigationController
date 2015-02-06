@@ -1,0 +1,116 @@
+#include "DummyTurtle.h"
+
+DummyTurtle::DummyTurtle(ros::NodeHandle nh, ros::NodeHandle nh_private):
+  nh_(nh), 
+  nh_private_(nh_private)
+{
+  ros::NodeHandle node  (nh_);
+
+  //control cmds publisher
+  pub_vel = node.advertise<geometry_msgs::Twist>("cmd_vel", 1000);
+
+  initParameters();
+}
+
+DummyTurtle::~DummyTurtle()
+{
+  ROS_INFO("Destroying DummyTurtle ");
+}
+
+void DummyTurtle::initParameters()
+{ 
+  if (!nh_private_.getParam("turtle_ROS_thrust_cmd_table",strThrustCmd))
+    strThrustCmd = "0 0.05 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45 0.5";
+  if (!nh_private_.getParam("turtle_actual_thrust_table",strActThrust))
+    strActThrust = "57.8 95.3 138.3 192.3 265.3 350.3 430.3 540.3 665.3 790.3 932.3";
+  if (!nh_private_.getParam("turtle_sensor_distance", sensorDistance))
+    sensorDistance = 0.1; //unit m
+
+  thrustCmd = readTable(strThrustCmd);
+  actualThrust = readTable(strActThrust);
+  ROS_INFO("Thrust table: ");
+  for (int i = 0; (unsigned)i<thrustCmd.size(); i++)
+    ROS_INFO("%.3f : %.3f",thrustCmd[i],actualThrust[i]);
+}
+
+std::vector<double> DummyTurtle::readTable(std::string strTable)
+{
+  std::vector<double> result;
+  std::istringstream iss(strTable);
+
+  while (iss)
+    {
+      std::string sub;
+      iss >>sub;
+      result.push_back(atof(sub.c_str()));
+    }
+
+  result.pop_back();
+
+  return result;
+}
+
+/*
+double DummyTurtle::interpolateThrust(double input)
+{
+  int i = 4;
+  ROS_DEBUG("INPUT %.3f",input);
+  while (input>actualThrust[i]-heli_mass && i<=10)
+    i++;
+
+  double output; 
+  ROS_DEBUG("cmd %d",i);
+  //lower bound on output is 0.3 and higher bound on output is 0.5
+  if (i >= 11)
+    output = 0.5;
+
+  if (i <= 6)
+    output = 0.3;
+
+  if ((i<11)&&(i>6))
+    output  = (input + heli_mass - actualThrust[i-1]) / (actualThrust[i] - actualThrust[i-1]) * 0.05 + thrustCmd[i-1];
+  ROS_DEBUG("OUTPUT %.3f",output);
+  return output;
+}
+*/
+
+void DummyTurtle::VelDrive(double velDesX, double velDesY, double psi)
+{
+  double vel_x_des, vel_y_des;
+  if (velDesX != velDesX)
+    vel_x_des = 0;
+  else
+    vel_x_des = velDesX;
+
+  if (velDesY != velDesY)
+    vel_y_des = 0;
+  else
+    vel_y_des = velDesY;
+
+
+  vel_des2control(vel_x_des,vel_y_des,psi);
+
+}
+
+
+void DummyTurtle::vel_des2control(double vel_x_des, double vel_y_des, double psi)
+{
+  double linearVel,omega;
+  //using feedback linearization to calculate desired linear velocity and omega
+  linearVel = cos(psi) * vel_x_des + sin(psi) * vel_y_des;
+  omega = (-sin(psi) * vel_x_des + cos(psi) * vel_y_des) / sensorDistance;
+  ROS_DEBUG("LINEAR VEL %.3f Omega %.3f Psi %.3f", linearVel, omega, psi);
+  linearVel_log.push_back(linearVel);
+  omega_log.push_back(omega);
+  //May need more mapping here
+
+  msg_turtleInput.linear.x = linearVel;
+  msg_turtleInput.linear.y = 0;
+  msg_turtleInput.linear.z = 0;
+   
+  msg_turtleInput.angular.x = 0;
+  msg_turtleInput.angular.y = 0;
+  msg_turtleInput.angular.z = omega;
+
+  pub_vel.publish(msg_turtleInput);
+}

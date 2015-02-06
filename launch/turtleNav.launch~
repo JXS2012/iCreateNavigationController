@@ -1,0 +1,32 @@
+<launch>
+
+  #### Turtle ###################################
+
+  <node pkg="turtleDriver" type="turtleNav" name="turtle" 
+    output = "screen">
+    <param name="turtle_vicon" type="string" value="/vicon/turtle/turtle"/>
+
+    <param name="turtle_freq" type="double" value="30.0"/>
+
+    <param name="turtle_total_time" type="double" value="150.0"/>
+
+    <param name="gravity_constant" type="double" value="9.81"/>
+
+    <param name="turtle_drive_mode" type="bool" value="false"/>
+
+    <param name="turtle_ROS_thrust_cmd_table" value="0 0.05 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45 0.5"/>
+
+    <param name="turtle_actual_thrust_table" value="57.8 95.3 138.3 192.3 265.3 350.3 430.3 540.3 665.3 790.3 932.3"/>
+
+    <param name="turtle_sensor_distance" type="double" value="0.28"/>
+
+    <param name="originX" type="double" value="1510.6"/>
+    
+    <param name="originY" type="double" value="1796.5"/>
+  </node>
+
+
+</launch>
+
+
+
